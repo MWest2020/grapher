@@ -1,0 +1,322 @@
+openapi: 3.1.0
+info:
+  title: Grapher API
+  description: REST API for grapher serve mode — triggers analysis and exposes results.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8080
+
+paths:
+  /api/v1/analyze:
+    post:
+      summary: Trigger a new analysis job
+      operationId: triggerAnalysis
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnalyzeRequest'
+            example:
+              repo: ./my-repo
+              analyzers: [deadcode, security]
+      responses:
+        '202':
+          description: Job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobCreated'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: A job is already running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/jobs/{id}:
+    get:
+      summary: Get job status and results
+      operationId: getJob
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Job details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/findings:
+    get:
+      summary: List findings from the most recent completed job
+      operationId: listFindings
+      parameters:
+        - name: analyzer
+          in: query
+          schema:
+            type: string
+          description: Filter by analyzer name (e.g. deadcode)
+        - name: severity
+          in: query
+          schema:
+            $ref: '#/components/schemas/Severity'
+          description: Filter by severity level
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [severity, centrality]
+          description: Sort order
+      responses:
+        '200':
+          description: List of findings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Finding'
+        '404':
+          description: No completed job available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/graph:
+    get:
+      summary: Return the full code graph as JSON
+      operationId: getGraph
+      responses:
+        '200':
+          description: Graph nodes and edges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Graph'
+        '404':
+          description: No completed job available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/fix:
+    post:
+      summary: Request a Claude fix proposal for a specific finding
+      operationId: requestFix
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FixRequest'
+      responses:
+        '200':
+          description: Fix proposal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FixResponse'
+        '400':
+          description: Invalid request or missing finding
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Claude API unavailable or ANTHROPIC_API_KEY not set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  schemas:
+    AnalyzeRequest:
+      type: object
+      required: [repo]
+      properties:
+        repo:
+          type: string
+          description: Path to the repository to analyze
+        analyzers:
+          type: array
+          items:
+            type: string
+          description: List of analyzer names to run. Omit for all analyzers.
+
+    JobCreated:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          format: uuid
+
+    JobStatus:
+      type: string
+      enum: [pending, running, done, error]
+
+    Job:
+      type: object
+      required: [id, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        error:
+          type: string
+        findings:
+          type: array
+          items:
+            $ref: '#/components/schemas/Finding'
+
+    Severity:
+      type: string
+      enum: [critical, high, medium, low, info]
+
+    Finding:
+      type: object
+      required: [analyzer_name, symbol, severity, centrality, title, why, suggestion, fix_prompt]
+      properties:
+        analyzer_name:
+          type: string
+        symbol:
+          $ref: '#/components/schemas/Symbol'
+        severity:
+          $ref: '#/components/schemas/Severity'
+        centrality:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        title:
+          type: string
+        why:
+          type: string
+        suggestion:
+          type: string
+        fix_prompt:
+          type: string
+        callers:
+          type: array
+          items:
+            type: string
+
+    Symbol:
+      type: object
+      required: [id, name, kind, file, line, language]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [function, class, method, module]
+        file:
+          type: string
+        line:
+          type: integer
+        language:
+          type: string
+        is_entry_point:
+          type: boolean
+
+    Node:
+      type: object
+      required: [id, name, kind, file, line, language, centrality, is_entry_point]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        kind:
+          type: string
+        file:
+          type: string
+        line:
+          type: integer
+        language:
+          type: string
+        centrality:
+          type: number
+          format: float
+        is_entry_point:
+          type: boolean
+
+    Edge:
+      type: object
+      required: [from, to, kind]
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+        kind:
+          type: string
+          enum: [call, import, inherits, implements]
+
+    Graph:
+      type: object
+      required: [nodes, edges]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Node'
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/Edge'
+
+    FixRequest:
+      type: object
+      required: [finding_index]
+      properties:
+        finding_index:
+          type: integer
+          description: Index of the finding in the most recent job's findings array
+
+    FixResponse:
+      type: object
+      required: [proposal]
+      properties:
+        proposal:
+          type: string
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
